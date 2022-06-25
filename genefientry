@@ -13,6 +13,8 @@ usage() {
                 -l,--boot-label                 label or name of the new boot entry
                 -m,--microcode                  path to microcode
                 -h,--help                       see this menu
+
+  Note: make sure the efi executable and microcode files reside in the efi partition.
 EOF
   exit ${1:-1}
 }
@@ -34,8 +36,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -m|--microcode)
-      MICROCODE="${2}"
       [[ -f "${2}" ]] || err "! ${2} file doesn't exist!"
+      MICROCODE="${2}"
       shift
       ;;
     -p|--efi-partition)
@@ -104,34 +106,55 @@ efimountpoint="$(lsblk -no MOUNTPOINTS ${EFIDISKPART})"
 LOADER="$(echo ${EFIEXECPATH##${efimountpoint}} | tr '\/' '\\')"
 
 # --unicode
+# an example looks like:
+# 	"root=UUID=xxxxx... rootfstype=btrfs
+#	 rootflags=subvol=/foo rw resume=/swapfie
+# 	 initrd=\EFI\microcode.img initrd=\EFI\initramfs.img"
 UNICODE=
-# find the root partition entry from /etc/fstab and obtain it's PARTUUID
-# since efistub don't play well with UUID; we need to provide the PARTUUID
+
+# find the root partition entry from /etc/fstab and obtain it's UUID
+# root=UUID=xxxx or root=PARTUUID=xxxx
 ROOTPART="$(grep ^[^#] /etc/fstab | grep "/ " | awk '{print $1}' )"
-ROOTPART="${ROOTPART##*=}"
-ROOTPART="$(blkid | grep "${ROOTPART}" | awk '{ print $1 }' | tr -d ':')"
-ROOTPARTUUID="$(lsblk -no PARTUUID "${ROOTPART}" 2>/dev/null)"
-if [[ ! -z ${ROOTPARTUUID} ]] ; then
-  UNICODE="root=PARTUUID=${ROOTPARTUUID}"
+if [[ ${ROOTPART} == /dev/* ]]; then
+  ROOTUUID="$(lsblk -no UUID "${ROOTPART}" 2>/dev/null)"
 else
-  err "! unable to find PARTUUID of root partiotion!"
+  ROOTUUID="${ROOTPART}"
+fi
+if [[ ! -z ${ROOTUUID} ]] ; then
+  UNICODE="root=${ROOTUUID}"
+else
+  err "! unable to find UUID of root partiotion!"
 fi
 # root filesystem type
+# rootfs=xxxxx
 ROOTFSTYPE="$(grep ^[^#] /etc/fstab | grep "/ " | awk '{print $3}')"
 [[ ! -z $ROOTFSTYPE ]] && UNICODE="${UNICODE} rootfstype=${ROOTFSTYPE}"
 # rootflags
+# rootflags=xxxxx
 ROOTFLAGS="$(grep ^[^#] /etc/fstab | grep "/ " | awk '{print $4}')"
 [[ ! -z $ROOTFLAGS ]] && UNICODE="${UNICODE} rootflags=${ROOTFLAGS}"
 # make sure to mount root as read-writable
 UNICODE="${UNICODE} rw"
+
+# swap
+# resume=xxxx
+SWAPPART="$(grep ^[^#] /etc/fstab | grep "swap " | awk '{print $1}' )"
+if [[ ! -z ${SWAPPART} ]] ; then
+  UNICODE="${UNICODE} resume=${SWAPPART}"
+fi
+
 # microcode
-if [[ -f ${MICROCODE} ]] ; then
+# initrd=/EFI/microcode.img
+if [[ -f ${MICROCODE} ]]; then
   MICROCODE="$(echo ${MICROCODE##${efimountpoint}} | tr '\/' '\\')"
   UNICODE="${UNICODE} initrd=${MICROCODE}"
 fi
-# initramfs
+
+# initramfs; basically check initramfs file with the
+# same kernel version in the efi directory.
+# initrd=/EFI/initramfs.img
 INITRAMFS="${EFIEXECPATH/%efi/img}"
-INITRAMFS="$(echo ${INITRAMFS/vmlinuz/initramfs})"
+INITRAMFS="${INITRAMFS/vmlinuz/initramfs}"
 if [[ -f ${INITRAMFS} ]] ; then
   INITRAMFS="$(echo ${INITRAMFS##${efimountpoint}} | tr '\/' '\\')"
   UNICODE="${UNICODE} initrd=${INITRAMFS}"
@@ -143,6 +166,7 @@ for id in $(efibootmgr | grep "${BOOTLABEL}$" | awk '{ print $1 }' | tr -d "*");
   efibootmgr -q -b "${id#Boot}" -B 2>/dev/null
 done
 echo "> Creating new boot entry : ${BOOTLABEL}"
+
 # create new entry
 efibootmgr --quiet --create --disk ${EFIDISKID} --part ${EFIPARTID} --label "${BOOTLABEL}" --loader "${LOADER}" --unicode "${UNICODE}" || err "!!! Failed to create new boot entry!"
 #   
