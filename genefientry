@@ -116,7 +116,7 @@ UNICODE=
 # root=UUID=xxxx or root=PARTUUID=xxxx
 ROOTPART="$(grep ^[^#] /etc/fstab | grep "/ " | awk '{print $1}' )"
 if [[ ${ROOTPART} == /dev/* ]]; then
-  ROOTUUID="$(lsblk -no UUID "${ROOTPART}" 2>/dev/null)"
+  ROOTUUID="UUID=$(lsblk -no UUID "${ROOTPART}" 2>/dev/null)"
 else
   ROOTUUID="${ROOTPART}"
 fi
