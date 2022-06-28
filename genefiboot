@@ -1,0 +1,157 @@
+#!/bin/bash
+
+# simple script to create new efistub boot entry using efibootmgr
+# requires two arguments --efi-directory and --efi-loader
+
+usage() {
+  cat <<-EOF
+  EFIstub boot entry generator for lazy people.
+    
+  Usage: genefiboot --efi-directory /efi --kernel 5.18.1-gentoo-r2 --label "Gentoo/Linux"
+    
+      -e,--efi-directory                  vmlinuz loader directory
+      -k,--kernel                         kernel version
+      -l,--label                          label of boot entry
+      -h,--help                           print this menu
+
+EOF
+    exit ${1:-1}
+}
+[[ $# -lt 1 ]] && usage 1
+
+err() { # err "error msg" error-code
+  echo "Error: ${1}!"
+    exit ${2:-1}
+}
+
+label=
+efidir=
+kernel=
+default_ucode="intel-uc.img"
+
+while [[ $# -gt 0 ]] ; do
+  case $1 in
+    -e|--efi-directory)
+      efidir="${2}"
+      shift
+      ;;
+    -k|--kernel)
+      kernel="${2}"
+      shift
+      ;;
+    -l|--label)
+      label="${2}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+  esac
+  shift
+done
+
+shopt -s extglob
+
+# checks before anything 
+[[ $(whoami) == root ]] || err "root permission required"
+[[ $(findmnt -no FSTYPE "${efidir}") == vfat ]] || err "${efidir} is either not mounted or not a valid efi partition"
+[[ -n ${kernel} ]] || err "no kernel version is given. see --help"
+[[ -f /boot/vmlinuz-${kernel} ]] || err "kernel executable doesn't exist inside /boot. install kernel first"
+
+# --label
+if [[ -z ${label} ]]; then
+  label="$(awk -F '=' '/^PRETTY_NAME=/ {print $2}' /etc/os-release | tr -d '"')"
+else
+  if [[ ${label} == EFI* ]]; then
+    err "label name can't start with EFI"
+  fi
+fi
+
+# --disk and --part
+efidiskpart=$(findmnt -no SOURCE "${efidir}")
+efidisk="${efidiskpart%%+([[:digit:]])}"
+efipart="${efidiskpart##${efidisk}}"
+[[ ${efidisk} == /dev/nvme* ]] && efidisk="${efidisk%%p}"
+
+# --loader
+efisubdir="$(awk -F '=' '/^ID=/ {print $2}' /etc/os-release)"
+loader="\\${efisubdir}\\vmlinuz-${kernel}.efi"
+
+# --unicode
+unicode=
+
+# rootuuid, rootfstype, rootflags
+rootuuid=$(findmnt -no UUID /)
+rootfstype=$(findmnt -no FSTYPE /)
+rootflags=$(findmnt -no FS-OPTIONS /)
+unicode="root=UUID=${rootuuid} rootfstype=${rootfstype} rootflags=${rootflags} rw"
+
+# resume
+swapid="$(awk '(/^[^#]/) && (/swap/) {print $1}' /etc/fstab)"
+if [[ -n ${swapid} ]]; then
+  swapuuid="$(findmnt -no UUID ${swapid})"
+  # if swap is a partition
+  if [[ -n ${swapuuid} ]]; then
+    swapuuid="resume=UUID=${swapuuid}"
+  # if swap is a file
+  else
+    swapuuid="resume=UUID=$(findmnt -no UUID -T ${swapid})"
+    swapfstype="$(stat -f -c %T ${swapid})"
+    if [[ ${swapfstype} == @(ext2|ext3|ext4) ]]; then
+      swap_offset=$(filefrag -v "${swapid}" | awk '$1=="0:" {print substr($4, 1, length($4)-2)}')
+      swapuuid="${swapuuid} resume_offset=${swap_offset}"
+    elif [[ ${swapfstype} == btrfs ]]; then
+      curl -s "https://raw.githubusercontent.com/osandov/osandov-linux/master/scripts/btrfs_map_physical.c" > /tmp/bmp.c \
+        || err "an active network is required to download btrfs_map_physical.c to determine btrfs swap offset"
+      cc -o /tmp/bmp /tmp/bmp.c
+      swap_offset=$(echo "$(/tmp/bmp "${swapid}" | egrep "^0\s+" | cut -f9) / $(getconf PAGESIZE)" | bc)
+      rm /tmp/bmp.c /tmp/bmp
+      swapuuid="${swapuuid} resume_offset=${swap_offset}"
+    else
+      swapuuid=
+    fi
+  fi
+fi
+unicode="${unicode} ${swapuuid}"
+
+# -- microcode
+if [[ -f /boot/${default_ucode} ]]; then
+  ucode="\\${efisubdir}\\${default_ucode}"
+  unicode="${unicode} initrd=${ucode}"
+fi
+
+# -- initramfs
+if [[ -f /boot/initramfs-${kernel}.img ]]; then
+  initramfs="\\${efisubdir}\\initramfs-${kernel}.img"
+  unicode="${unicode} initrd=${initramfs}"
+fi
+
+# copy files to the efi sub directory
+echo "> copying /boot/vmlinuz-${kernel} to ${efidir}/${efisubdir}/vmlinuz-${kernel}.efi..."
+mkdir -p "${efidir}"/"${efisubdir}"
+rm -f "${efidir}"/"${efisubdir}"/vmlinuz-"${kernel}".efi
+cp /boot/vmlinuz-"${kernel}" "${efidir}"/"${efisubdir}"/vmlinuz-"${kernel}".efi
+if [[ -n ${ucode} ]]; then
+  echo "> copying /boot/${default_ucode} to ${efidir}/${efisubdir}/${default_ucode}..."
+  rm -f "${efidir}"/"${efisubdir}"/"${default_ucode}"
+  cp /boot/"${default_ucode}" "${efidir}"/"${efisubdir}"/"${default_ucode}"
+fi
+if [[ -n ${initramfs} ]]; then
+  echo "> copying /boot/initramfs-${kernel}.img to ${efidir}/${efisubdir}/initramfs-${kernel}.img..."
+  rm -f "${efidir}"/"${efisubdir}"/initramfs-"${kernel}".img
+  cp /boot/initramfs-"${kernel}".img "${efidir}"/"${efisubdir}"/initramfs-"${kernel}".img
+fi
+
+# remove similar old boot entries
+echo "> Removing duplicate entries..."
+for id in $(efibootmgr | grep "${label}$" | awk '{ print $1 }' | tr -d "*"); do
+  efibootmgr -q -b "${id#Boot}" -B 2>/dev/null
+done
+
+# finally create the new boot
+echo "> Creating new boot entry : ${label}"
+efibootmgr --quiet --create --label "${label}" --disk "${efidisk}" --part "${efipart}" --loader "${loader}" --unicode "${unicode}" \
+  || err "oops! failed to create new boot entry. something went wrong!"
+efibootmgr
+
+# vim: set ts=2 sts=2 shiftwidth=2 expandtab:
