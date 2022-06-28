@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # simple script to create new efistub boot entry using efibootmgr
-# requires two arguments --efi-directory and --efi-loader
+# requires two arguments; efi directory and kernel version
 
 usage() {
   cat <<-EOF
@@ -11,7 +11,7 @@ usage() {
     
       -e,--efi-directory                  vmlinuz loader directory
       -k,--kernel                         kernel version
-      -l,--label                          label of boot entry
+      -l,--label                          label of boot entry (optional)
       -h,--help                           print this menu
 
 EOF
