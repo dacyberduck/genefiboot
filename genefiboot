@@ -89,14 +89,24 @@ unicode="root=UUID=${rootuuid} rootfstype=${rootfstype} rootflags=${rootflags} r
 # resume
 swapid="$(awk '(/^[^#]/) && (/swap/) {print $1}' /etc/fstab)"
 if [[ -n ${swapid} ]]; then
-  swapuuid="$(findmnt -no UUID ${swapid})"
+  # if swap is a /dev/block; find it's uuid
+  if [[ ${swapid} == /dev/* ]]; then
+    swapuuid="$(findmnt -no UUID ${swapid})"
+  # if swapid is already uuid
+  elif [[ ${swapid} == UUID=* ]]; then
+    swapuuid="${swapid#UUID=}"
+  # partuuid or partition name/label?
+  else
+    swapid="$(blkid | grep ${swapid#*=} | awk '{print $1}' | tr -d ':')"
+    swapuuid="$(findmnt -no UUID ${swapid})"
+  fi
   # if swap is a partition
   if [[ -n ${swapuuid} ]]; then
     swapuuid="resume=UUID=${swapuuid}"
   # if swap is a file
   else
     swapuuid="resume=UUID=$(findmnt -no UUID -T ${swapid})"
-    swapfstype="$(stat -f -c %T ${swapid})"
+    swapfstype="$(stat -f -c %T ${swapid} 2>/dev/null)"
     if [[ ${swapfstype} == @(ext2|ext3|ext4) ]]; then
       swap_offset=$(filefrag -v "${swapid}" | awk '$1=="0:" {print substr($4, 1, length($4)-2)}')
       swapuuid="${swapuuid} resume_offset=${swap_offset}"
