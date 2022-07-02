@@ -87,18 +87,19 @@ rootflags=$(findmnt -no FS-OPTIONS /)
 unicode="root=UUID=${rootuuid} rootfstype=${rootfstype} rootflags=${rootflags} rw"
 
 # resume
+# read swap device name from /etc/fstab
 swapid="$(awk '(/^[^#]/) && (/swap/) {print $1}' /etc/fstab)"
 if [[ -n ${swapid} ]]; then
-  # if swap is a /dev/block; find it's uuid
+  # if swapid is a /dev/block; find it's uuid
   if [[ ${swapid} == /dev/* ]]; then
     swapuuid="$(findmnt -no UUID ${swapid})"
   # if swapid is already uuid
   elif [[ ${swapid} == UUID=* ]]; then
     swapuuid="${swapid#UUID=}"
   # partuuid or partition name/label?
-  else
-    swapid="$(blkid | grep ${swapid#*=} | awk '{print $1}' | tr -d ':')"
-    swapuuid="$(findmnt -no UUID ${swapid})"
+  elif [[ ${swapid} == PART* ]];
+    tempswapid="$(blkid | grep ${swapid#*=} | awk '{print $1}' | tr -d ':')"
+    swapuuid="$(findmnt -no UUID ${tempswapid})"
   fi
   # if swap is a partition
   if [[ -n ${swapuuid} ]]; then
