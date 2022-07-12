@@ -9,7 +9,7 @@ usage() {
     
   Usage: genefiboot --efi-directory /efi --kernel 5.18.1-gentoo-r2 --label "Gentoo/Linux"
     
-      -e,--efi-directory                  vmlinuz loader directory
+      -e,--efi-directory                  efi directory/mountpoint
       -k,--kernel                         kernel version
       -l,--label                          label of boot entry (optional)
       -h,--help                           print this menu
